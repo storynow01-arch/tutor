@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSignature, WebhookEvent } from '@line/bot-sdk';
 import { lineClient, lineConfig } from '@/lib/line';
-import { getCachedNotionData } from '@/lib/notion';
+import { getCachedNotionData, getSystemConfig, getChatSession, updateChatSession } from '@/lib/notion';
 import { generateAnswer } from '@/lib/gemini';
 
 export async function POST(req: NextRequest) {
@@ -30,17 +30,75 @@ export async function POST(req: NextRequest) {
             const userMessage = event.message.text;
             const replyToken = event.replyToken;
 
-            // 1. Retrieve Cached Context from Notion
-            // This will use the in-memory cache if available (TTL 24h)
-            // "unstable_cache" handles the caching logic.
+            // --- 0. Check System Config & Session Mode ---
+            // Fetch config and session in parallel to save time
+            const [systemConfig, chatSession] = await Promise.all([
+                getSystemConfig(),
+                getChatSession(userId)
+            ]);
+
+            // Default config if fetch fails
+            const isAiEnabled = systemConfig?.AI_ENABLED ?? true;
+            const handoverKeywords = systemConfig?.HANDOVER_KEYWORDS ?? ['轉真人', '人工客服'];
+
+            // 1. Check AI Switch
+            if (!isAiEnabled) {
+                console.log(`[LINE] AI is disabled globally. Ignoring message from ${userId}.`);
+                return;
+            }
+
+            // 2. Check Chat Mode
+            if (chatSession && chatSession.mode === 'Human') {
+                console.log(`[LINE] User ${userId} is in Human mode. Ignoring message (waiting for admin reply).`);
+                // Update last active time
+                await updateChatSession(userId, 'Human');
+                return;
+            }
+
+            // 3. Check Handover Keywords
+            // If user says "轉真人", switch to Human mode
+            const hitKeyword = handoverKeywords.some(keyword => userMessage.includes(keyword));
+            if (hitKeyword) {
+                console.log(`[LINE] User ${userId} triggered handover with message: ${userMessage}`);
+                await updateChatSession(userId, 'Human');
+
+                await lineClient.replyMessage({
+                    replyToken: replyToken,
+                    messages: [{
+                        type: 'text',
+                        text: '已為您轉接專人客服，請稍候，我們將盡快回覆您。'
+                    }]
+                });
+                return;
+            }
+
+            // --- AI Processing (Normal Flow) ---
+
+            // 4. Update Session (Keep/Set as AI mode)
+            // Fire and forget update (don't await to block reply)
+            updateChatSession(userId, 'AI').catch(err => console.error("Failed to update session", err));
+
+            // 5. Retrieve Context & Generate Answer
             const notionData = await getCachedNotionData();
             const context = notionData.combinedContext;
 
-            // 2. Generate Answer using Gemini 2.5 Flash
-            // Pass the retrieved context + user message
-            const aiResponse = await generateAnswer(userMessage, context);
+            // Pass system prompt if configured
+            const systemPrompt = systemConfig?.SYSTEM_PROMPT;
+            // Note: generateAnswer function might need update to accept system prompt if we want to dynamic it. 
+            // For now, we will rely on its internal prompt or update it later. 
+            // Let's assume generateAnswer uses default if not passed, but we need to pass it?
+            // Checking generateAnswer signature... it currently takes (question, context).
+            // We can append custom system prompt to context or update generateAnswer.
+            // For MVP, let's prepend system prompt to context string if it exists.
 
-            // 3. Reply to LINE
+            let finalContext = context;
+            if (systemPrompt) {
+                finalContext = `[System Instruction]\n${systemConfig.SYSTEM_PROMPT}\n\n${context}`;
+            }
+
+            const aiResponse = await generateAnswer(userMessage, finalContext);
+
+            // 6. Reply to LINE
             try {
                 await lineClient.replyMessage({
                     replyToken: replyToken,
@@ -53,8 +111,6 @@ export async function POST(req: NextRequest) {
                 });
             } catch (replyError: any) {
                 console.error(`[LINE Reply Error] Failed to reply to ${userId}: ${replyError.message}`);
-                // Do not throw; ensure we return 200 OK to LINE even if reply fails
-                // (Essential for Webhook Verification which uses dummy tokens)
             }
 
             console.log(`[LINE] Replied to ${userId}. Model: ${aiResponse.modelUsed}`);

@@ -18,6 +18,10 @@ export interface NotionContext {
   lastUpdated: number;
 }
 
+// Database IDs (Expected to be in .env)
+const NOTION_CONFIG_DB_ID = process.env.NOTION_CONFIG_DB_ID || '';
+const NOTION_SESSION_DB_ID = process.env.NOTION_SESSION_DB_ID || '';
+
 /**
  * Validates Notion Page IDs from environment variable
  */
@@ -101,3 +105,142 @@ export const getCachedNotionData = unstable_cache(
     tags: ['notion-data'],
   }
 );
+
+// --- System Configuration Implementation (Notion DB) ---
+
+export interface SystemConfig {
+  AI_ENABLED: boolean;
+  MODEL_NAME: string;
+  SYSTEM_PROMPT?: string;
+  HANDOVER_KEYWORDS?: string[];
+}
+
+export async function getSystemConfig(): Promise<SystemConfig | null> {
+  if (!NOTION_CONFIG_DB_ID) return null;
+
+  try {
+    const response = await notion.databases.query({
+      database_id: NOTION_CONFIG_DB_ID,
+    });
+
+    const config: any = {};
+
+    response.results.forEach((page: any) => {
+      const props = page.properties;
+      // Expecting "Key" (Title) and "Value" (RichText/Checkbox)
+      // This needs to match the user's DB setup structure strictly.
+      // We will assume a simple Key-Value structure:
+      // Key: Title
+      // Value: RichText (or Checkbox for boolean if feasible, but text is safer for compatibility)
+
+      let key = "";
+      let value: any = "";
+
+      if (props.Key && props.Key.title && props.Key.title.length > 0) {
+        key = props.Key.title[0].plain_text;
+      }
+
+      if (props.Value && props.Value.rich_text && props.Value.rich_text.length > 0) {
+        value = props.Value.rich_text[0].plain_text;
+      }
+
+      if (key) {
+        // Type conversion
+        if (value === 'true') config[key] = true;
+        else if (value === 'false') config[key] = false;
+        else config[key] = value;
+      }
+    });
+
+    // Split keywords if string
+    if (typeof config.HANDOVER_KEYWORDS === 'string') {
+      config.HANDOVER_KEYWORDS = config.HANDOVER_KEYWORDS.split(',').map((k: string) => k.trim());
+    }
+
+    return config as SystemConfig;
+
+  } catch (error) {
+    console.error("Error fetching system config:", error);
+    return null;
+  }
+}
+
+// --- Chat Session Management (Notion DB) ---
+
+export interface ChatSession {
+  lineUserId: string;
+  mode: 'AI' | 'Human';
+  lastActive: string;
+  pageId?: string; // Notion Page ID representing this row
+}
+
+export async function getChatSession(lineUserId: string): Promise<ChatSession | null> {
+  if (!NOTION_SESSION_DB_ID) return null;
+
+  try {
+    const response = await notion.databases.query({
+      database_id: NOTION_SESSION_DB_ID,
+      filter: {
+        property: 'LineUserID',
+        title: {
+          equals: lineUserId
+        }
+      }
+    });
+
+    if (response.results.length === 0) return null;
+
+    const page: any = response.results[0];
+    const props = page.properties;
+
+    return {
+      lineUserId,
+      mode: props.Mode?.select?.name || 'AI',
+      lastActive: props.LastActive?.date?.start || new Date().toISOString(),
+      pageId: page.id
+    };
+
+  } catch (error) {
+    console.error("Error fetching chat session:", error);
+    return null;
+  }
+}
+
+export async function updateChatSession(lineUserId: string, mode: 'AI' | 'Human') {
+  if (!NOTION_SESSION_DB_ID) return;
+
+  const existingSession = await getChatSession(lineUserId);
+
+  if (existingSession && existingSession.pageId) {
+    // Update
+    await notion.pages.update({
+      page_id: existingSession.pageId,
+      properties: {
+        Mode: {
+          select: { name: mode }
+        },
+        LastActive: {
+          date: { start: new Date().toISOString() }
+        }
+      }
+    });
+  } else {
+    // Create
+    await notion.pages.create({
+      parent: { database_id: NOTION_SESSION_DB_ID },
+      properties: {
+        LineUserID: {
+          title: [
+            { text: { content: lineUserId } }
+          ]
+        },
+        Mode: {
+          select: { name: mode }
+        },
+        LastActive: {
+          date: { start: new Date().toISOString() }
+        }
+      }
+    });
+  }
+}
