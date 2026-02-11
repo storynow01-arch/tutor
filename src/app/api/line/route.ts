@@ -41,15 +41,21 @@ export async function POST(req: NextRequest) {
             const aiResponse = await generateAnswer(userMessage, context);
 
             // 3. Reply to LINE
-            await lineClient.replyMessage({
-                replyToken: replyToken,
-                messages: [
-                    {
-                        type: 'text',
-                        text: aiResponse.text,
-                    },
-                ],
-            });
+            try {
+                await lineClient.replyMessage({
+                    replyToken: replyToken,
+                    messages: [
+                        {
+                            type: 'text',
+                            text: aiResponse.text,
+                        },
+                    ],
+                });
+            } catch (replyError: any) {
+                console.error(`[LINE Reply Error] Failed to reply to ${userId}: ${replyError.message}`);
+                // Do not throw; ensure we return 200 OK to LINE even if reply fails
+                // (Essential for Webhook Verification which uses dummy tokens)
+            }
 
             console.log(`[LINE] Replied to ${userId}. Model: ${aiResponse.modelUsed}`);
         }));
