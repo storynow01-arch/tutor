@@ -35,6 +35,7 @@ export async function toggleAiModeAction(lineUserId: string, currentMode: 'AI' |
 }
 
 export async function refreshNotionData() {
-    revalidateTag('notion-data');
+    // @ts-ignore - Next.js version specific signature
+    revalidateTag('notion-data', 'default');
     revalidatePath('/admin/settings');
 }
