@@ -36,13 +36,26 @@ export async function POST(req: NextRequest) {
             const userMessage = event.message.text;
             const replyToken = event.replyToken;
 
-            // 0. Handle "ID" command (Debug utility)
+            // 0a. Handle "ID" command
             if (userMessage.toLowerCase() === 'id' || userMessage.toLowerCase() === 'myid') {
+                await lineClient.replyMessage({
+                    replyToken: replyToken,
+                    messages: [{ type: 'text', text: `Your User ID: ${userId}` }]
+                });
+                return;
+            }
+
+            // 0b. Handle "Debug" command (Check Cache Status)
+            if (userMessage.toLowerCase() === 'debug' || userMessage.toLowerCase() === 'status') {
+                const notionData = await getCachedNotionData();
+                const fetchedTime = new Date(notionData.fetchedAt).toLocaleString();
+                const pageTitles = notionData.pages.map(p => `• ${p.title}`).join('\n');
+
                 await lineClient.replyMessage({
                     replyToken: replyToken,
                     messages: [{
                         type: 'text',
-                        text: `Your LINE User ID:\n${userId}`
+                        text: `[System Debug]\n\n🕒 Cache Time:\n${fetchedTime}\n\n📚 Loaded Pages:\n${pageTitles || '(No pages loaded)'}`
                     }]
                 });
                 return;
