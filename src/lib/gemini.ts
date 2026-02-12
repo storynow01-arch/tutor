@@ -43,8 +43,7 @@ Instructions:
 
     try {
         // Attempt 1: Primary Model
-        const modelName = process.env.GEMINI_MODEL_NAME || 'gemini-2.5-flash';
-        // Use 'gemini-2.0-flash-exp' or similar if 2.5 is not available, but let's try 2.5 as requested.
+        const modelName = process.env.GEMINI_MODEL_NAME || 'gemini-2.0-flash'; // 2.5 is not stable yet
         console.log(`[Gemini] Attempting generation with ${modelName}...`);
 
         const model = genAI.getGenerativeModel({ model: modelName });
@@ -72,8 +71,9 @@ Instructions:
             };
         } catch (fallbackError: any) {
             console.error(`[Gemini] Fallback model also failed: ${fallbackError.message}`);
+            // Return detailed error for debugging
             return {
-                text: '抱歉，系統目前忙碌中，請稍後再試。 (AI Service Unavailable)',
+                text: `抱歉，系統目前忙碌中 (AI Service Unavailable)。\n\n錯誤代碼: ${fallbackError.message || fallbackError.toString()}`,
                 modelUsed: 'none',
             };
         }
