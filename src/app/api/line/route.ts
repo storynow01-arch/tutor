@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSignature, WebhookEvent } from '@line/bot-sdk';
 import { lineClient, lineConfig } from '@/lib/line';
-import { getCachedNotionData, getSystemConfig, getChatSession, updateChatSession } from '@/lib/notion';
-import { generateAnswer } from '@/lib/gemini';
+import { getCachedNotionData, getChatSession, updateChatSession } from '@/lib/notion';
+import { generateAnswer } from '@/lib/ai';
+
+// --- Configuration from Env ---
+const AI_ENABLED = process.env.AI_ENABLED !== 'false'; // Default true
+const SYSTEM_PROMPT = process.env.SYSTEM_PROMPT || '';
+const HANDOVER_KEYWORDS = (process.env.HANDOVER_KEYWORDS || '轉真人,人工客服').split(',').map(k => k.trim());
+const AUTO_SWITCH_MINUTES = parseInt(process.env.AUTO_SWITCH_MINUTES || '1', 10);
+const ADMIN_LINE_ID = process.env.ADMIN_LINE_ID || '';
 
 export async function POST(req: NextRequest) {
     try {
@@ -22,10 +29,6 @@ export async function POST(req: NextRequest) {
 
         // Process events in parallel
         await Promise.all(events.map(async (event) => {
-            if (event.type !== 'message' || event.message.type !== 'text') {
-                return;
-            }
-
             if (event.type !== 'message' || event.message.type !== 'text') {
                 return;
             }
@@ -62,19 +65,12 @@ export async function POST(req: NextRequest) {
                 return;
             }
 
-            // --- 0. Check System Config & Session Mode ---
-            // Fetch config and session in parallel to save time
-            const [systemConfig, chatSession] = await Promise.all([
-                getSystemConfig(),
-                getChatSession(userId)
-            ]);
+            // --- 0. Check Session Mode ---
+            // Fetch session
+            const chatSession = await getChatSession(userId);
 
-            // Default config if fetch fails
-            const isAiEnabled = systemConfig?.AI_ENABLED ?? true;
-            const handoverKeywords = systemConfig?.HANDOVER_KEYWORDS ?? ['轉真人', '人工客服'];
-
-            // 1. Check AI Switch
-            if (!isAiEnabled) {
+            // 1. Check AI Switch (Env)
+            if (!AI_ENABLED) {
                 console.log(`[LINE] AI is disabled globally. Ignoring message from ${userId}.`);
                 return;
             }
@@ -86,8 +82,7 @@ export async function POST(req: NextRequest) {
                 // Check Auto Switch Timeout
                 const lastActive = new Date(chatSession.lastActive).getTime();
                 const now = Date.now();
-                const timeoutMinutes = systemConfig?.AUTO_SWITCH_MINUTES || 1;
-                const timeoutMs = timeoutMinutes * 60 * 1000;
+                const timeoutMs = AUTO_SWITCH_MINUTES * 60 * 1000;
 
                 if (now - lastActive > timeoutMs) {
                     console.log(`[LINE] User ${userId} session timed out. Switching back to AI.`);
@@ -100,9 +95,9 @@ export async function POST(req: NextRequest) {
                 }
             }
 
-            // 3. Check Handover Keywords
+            // 3. Check Handover Keywords (Env)
             // If user says "轉真人", switch to Human mode
-            const hitKeyword = handoverKeywords.some(keyword => userMessage.includes(keyword));
+            const hitKeyword = HANDOVER_KEYWORDS.some(keyword => userMessage.includes(keyword));
             if (hitKeyword) {
                 console.log(`[LINE] User ${userId} triggered handover with message: ${userMessage}`);
                 await updateChatSession(userId, 'Human');
@@ -115,11 +110,10 @@ export async function POST(req: NextRequest) {
                     }]
                 });
 
-                // Notify Admin
-                const adminLineId = systemConfig?.ADMIN_LINE_ID;
-                if (adminLineId) {
+                // Notify Admin (Env)
+                if (ADMIN_LINE_ID) {
                     await lineClient.pushMessage({
-                        to: adminLineId,
+                        to: ADMIN_LINE_ID,
                         messages: [{
                             type: 'text',
                             text: `[系統通知] 用戶觸發真人客服請求！\n\n用戶ID: ${userId}\n訊息內容: ${userMessage}`
@@ -140,18 +134,9 @@ export async function POST(req: NextRequest) {
             const notionData = await getCachedNotionData();
             const context = notionData.combinedContext;
 
-            // Pass system prompt if configured
-            const systemPrompt = systemConfig?.SYSTEM_PROMPT;
-            // Note: generateAnswer function might need update to accept system prompt if we want to dynamic it. 
-            // For now, we will rely on its internal prompt or update it later. 
-            // Let's assume generateAnswer uses default if not passed, but we need to pass it?
-            // Checking generateAnswer signature... it currently takes (question, context).
-            // We can append custom system prompt to context or update generateAnswer.
-            // For MVP, let's prepend system prompt to context string if it exists.
-
             let finalContext = context;
-            if (systemPrompt) {
-                finalContext = `[System Instruction]\n${systemConfig.SYSTEM_PROMPT}\n\n${context}`;
+            if (SYSTEM_PROMPT) {
+                finalContext = `[System Instruction]\n${SYSTEM_PROMPT}\n\n${context}`;
             }
 
             const aiResponse = await generateAnswer(userMessage, finalContext);
@@ -171,7 +156,7 @@ export async function POST(req: NextRequest) {
                 console.error(`[LINE Reply Error] Failed to reply to ${userId}: ${replyError.message}`);
             }
 
-            console.log(`[LINE] Replied to ${userId}. Model: ${aiResponse.modelUsed}`);
+            console.log(`[LINE] Replied to ${userId}. Model: ${aiResponse.modelUsed} (${aiResponse.provider})`);
         }));
 
         return NextResponse.json({ status: 'success' });
@@ -181,3 +166,4 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
     }
 }
+

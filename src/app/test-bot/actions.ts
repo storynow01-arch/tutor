@@ -1,12 +1,13 @@
 'use server';
 
-import { generateAnswer } from '@/lib/gemini';
+import { generateAnswer } from '@/lib/ai';
 import { getCachedNotionData } from '@/lib/notion';
 
 export interface TestBotResult {
     response: string;
     context: string;
     model: string;
+    provider: string;
     notionPages: string[];
     latency: number;
 }
@@ -26,7 +27,9 @@ export async function testBotAction(message: string): Promise<TestBotResult> {
         response: aiResponse.text,
         context: notionData.combinedContext,
         model: aiResponse.modelUsed,
+        provider: aiResponse.provider,
         notionPages: notionData.pages.map(p => p.title || p.pageId),
         latency: end - start,
     };
 }
+

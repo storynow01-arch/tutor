@@ -123,7 +123,7 @@ export default function TestBotPage() {
                                         <h2 className="text-lg font-semibold text-slate-200">AI Response</h2>
                                         <div className="flex items-center gap-3 text-xs text-slate-400 bg-black/20 px-3 py-1 rounded-full">
                                             <span className="flex items-center gap-1">
-                                                <Cpu size={12} /> {result.model}
+                                                <Cpu size={12} /> {result.provider} / {result.model}
                                             </span>
                                             <span className="w-px h-3 bg-white/10" />
                                             <span className="flex items-center gap-1 text-emerald-400">
@@ -173,6 +173,6 @@ export default function TestBotPage() {
                     </div>
                 </div>
             </div>
-        </div>
+        </div >
     );
 }
